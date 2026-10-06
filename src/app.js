@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import express from 'express';
@@ -15,6 +15,7 @@ import { loadCommands, registerCommands as registerSlashCommands } from './handl
 import { runSafeTask, handleTaskError, ErrorCodes } from './utils/errorHandler.js';
 import { initializeMusic } from './services/music/riffySetup.js';
 import { shutdownMusic } from './services/music/playerHandler.js';
+import { publishGameNews } from './services/gameNewsService.js';
 import pkg from '../package.json' with { type: 'json' };
 import { EXPECTED_SCHEMA_VERSION, EXPECTED_SCHEMA_LABEL } from './config/database/schemaVersion.js';
 
@@ -116,6 +117,9 @@ class TitanBot extends Client {
     const host = process.env.WEB_HOST || '0.0.0.0';
     const corsOrigin = this.config.api?.cors?.origin || '*';
     
+    // Parse JSON request bodies
+    app.use(express.json());
+
     app.use((req, res, next) => {
       const allowedOrigins = Array.isArray(corsOrigin) ? corsOrigin : [corsOrigin];
       const origin = req.headers.origin;
@@ -208,6 +212,47 @@ class TitanBot extends Client {
         version: pkg.version,
         timestamp: new Date().toISOString()
       });
+    });
+
+    app.post('/game-news', async (req, res) => {
+      // Check authentication
+      const secret = process.env.GAME_NEWS_SECRET;
+
+      if (!secret) {
+        logger.error('GAME_NEWS_SECRET is missing.');
+        return res.status(500).json({ error: 'Server configuration error' });
+      }
+
+      const providedSecret = req.headers['x-game-news-secret'];
+
+      if (typeof providedSecret !== 'string' || providedSecret !== secret) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Validate required fields
+      const { game, title, message, url } = req.body || {};
+
+      const gameStr = String(game ?? '').trim();
+      const titleStr = String(title ?? '').trim();
+      const messageStr = String(message ?? '').trim();
+
+      if (!gameStr || !titleStr || !messageStr) {
+        return res.status(400).json({ error: 'game, title and message are required' });
+      }
+
+      // Publish to Discord
+      const result = await publishGameNews(this, {
+        game: gameStr,
+        title: titleStr,
+        message: messageStr,
+        url,
+      });
+
+      if (!result.success) {
+        return res.status(400).json({ error: 'Invalid request or failed to publish' });
+      }
+
+      res.status(200).json({ ok: true });
     });
 
     const startServer = (port, attempt = 0) => {
@@ -378,7 +423,7 @@ class TitanBot extends Client {
       }
 
       logger.info('✅ Graceful shutdown complete');
-  shutdownLog('Bot stopped successfully.');
+   shutdownLog('Bot stopped successfully.');
       process.exit(0);
     } catch (error) {
       logger.error('Error during graceful shutdown:', error);
